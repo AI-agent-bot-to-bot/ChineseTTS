@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>中文朗读工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #f4f6fb;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      color: #2c3e50;
+      margin-bottom: 24px;
+      letter-spacing: 2px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      padding: 28px;
+      width: 100%;
+      max-width: 680px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 220px;
+      font-size: 1.05rem;
+      line-height: 1.8;
+      border: 1.5px solid #d0d7e3;
+      border-radius: 10px;
+      padding: 14px;
+      resize: vertical;
+      outline: none;
+      color: #2c3e50;
+      font-family: inherit;
+      transition: border-color .2s;
+    }
+    textarea:focus { border-color: #4a90d9; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
+      align-items: center;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 22px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background .2s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+
+    #btn-play  { background: #4a90d9; color: #fff; }
+    #btn-play:hover  { background: #3a7bc8; }
+    #btn-pause { background: #f0a500; color: #fff; }
+    #btn-pause:hover:not(:disabled) { background: #d99300; }
+    #btn-stop  { background: #e55a5a; color: #fff; }
+    #btn-stop:hover:not(:disabled)  { background: #cc4444; }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      font-size: 0.88rem;
+      color: #555;
+    }
+    input[type=range] { width: 90px; accent-color: #4a90d9; }
+
+    .voice-group {
+      width: 100%;
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+      color: #555;
+    }
+    select {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1.5px solid #d0d7e3;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      outline: none;
+      color: #2c3e50;
+    }
+
+    #status {
+      margin-top: 14px;
+      font-size: 0.85rem;
+      color: #888;
+      min-height: 18px;
+    }
+
+    .highlight {
+      background: #fff3cd;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔊 中文朗读工具</h1>
+  <div class="card">
+    <textarea id="text" placeholder="在此粘贴或输入中文内容，然后点击「开始朗读」……"></textarea>
+
+    <div class="voice-group">
+      <label for="voice-select">语音：</label>
+      <select id="voice-select"><option>加载中……</option></select>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="btn-play"  onclick="startReading()">▶ 开始朗读</button>
+      <button class="btn" id="btn-pause" onclick="togglePause()" disabled>⏸ 暂停</button>
+      <button class="btn" id="btn-stop"  onclick="stopReading()" disabled>■ 停止</button>
+
+      <div class="slider-group">
+        <span>语速</span>
+        <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1"
+               oninput="rateLabel.textContent = (+this.value).toFixed(1)" />
+        <span id="rateLabel">1.0</span>
+      </div>
+
+      <div class="slider-group">
+        <span>音调</span>
+        <input type="range" id="pitch" min="0.5" max="2" step="0.1" value="1"
+               oninput="pitchLabel.textContent = (+this.value).toFixed(1)" />
+        <span id="pitchLabel">1.0</span>
+      </div>
+    </div>
+
+    <div id="status">等待朗读……</div>
+  </div>
+
+  <script>
+    const synth  = window.speechSynthesis;
+    const textEl = document.getElementById('text');
+    const sel    = document.getElementById('voice-select');
+    const status = document.getElementById('status');
+    const btnPlay  = document.getElementById('btn-play');
+    const btnPause = document.getElementById('btn-pause');
+    const btnStop  = document.getElementById('btn-stop');
+
+    let voices = [];
+
+    function loadVoices() {
+      voices = synth.getVoices();
+      sel.innerHTML = '';
+
+      // Prefer Chinese voices, but show all
+      const zh = voices.filter(v => /zh|chinese|mandarin|cantonese/i.test(v.lang + v.name));
+      const others = voices.filter(v => !/zh|chinese|mandarin|cantonese/i.test(v.lang + v.name));
+      const sorted = [...zh, ...others];
+
+      if (sorted.length === 0) {
+        sel.innerHTML = '<option value="">（浏览器无可用语音）</option>';
+        return;
+      }
+
+      sorted.forEach((v, i) => {
+        const opt = document.createElement('option');
+        opt.value = i;          // index in sorted[]
+        opt.dataset.name = v.name;
+        opt.textContent = `${v.name} (${v.lang})`;
+        if (zh.includes(v) && !sel.querySelector('[selected]')) opt.selected = true;
+        sel.appendChild(opt);
+      });
+
+      // store sorted for lookup
+      sel._sorted = sorted;
+    }
+
+    loadVoices();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    function getSelectedVoice() {
+      const opt = sel.options[sel.selectedIndex];
+      if (!opt || !sel._sorted) return null;
+      return sel._sorted[parseInt(opt.value)] || null;
+    }
+
+    // --- Chunked reading (fixes Chrome/Edge silent-fail on long text) ---
+    let chunks = [];
+    let chunkIndex = 0;
+    let isStopped = false;
+    let isPaused  = false;
+
+    // Split text into sentence-level chunks of at most ~200 chars
+    function splitChunks(text) {
+      // Split on Chinese/English sentence-ending punctuation
+      const parts = text.split(/(?<=[。！？!?…\n])/);
+      const result = [];
+      let buf = '';
+      for (const part of parts) {
+        if ((buf + part).length > 200 && buf.length > 0) {
+          result.push(buf);
+          buf = part;
+        } else {
+          buf += part;
+        }
+      }
+      if (buf.trim()) result.push(buf);
+      return result;
+    }
+
+    function speakChunk(index) {
+      if (isStopped || index >= chunks.length) {
+        if (!isStopped) {
+          status.textContent = '朗读完毕。';
+          resetButtons();
+        }
+        return;
+      }
+
+      chunkIndex = index;
+
+      const rate  = parseFloat(document.getElementById('rate').value);
+      const pitch = parseFloat(document.getElementById('pitch').value);
+      const voice = getSelectedVoice();
+
+      const utter = new SpeechSynthesisUtterance(chunks[index]);
+      utter.rate  = rate;
+      utter.pitch = pitch;
+      if (voice) utter.voice = voice;
+      else utter.lang = 'zh-CN';
+
+      status.textContent = `朗读中… (${index + 1} / ${chunks.length})`;
+
+      utter.onend = () => {
+        // Don't advance if we've been paused or stopped
+        if (!isStopped && !isPaused) speakChunk(index + 1);
+      };
+      utter.onerror = (e) => {
+        // 'interrupted' fires when cancel() is called on purpose (pause/stop) — ignore it
+        if (e.error === 'interrupted') return;
+        console.warn('TTS error', e.error, 'chunk', index);
+        if (!isStopped && !isPaused) speakChunk(index + 1);
+      };
+
+      synth.speak(utter);
+    }
+
+    // Remove symbols that TTS would read aloud as names ("等于号", "破折号" etc.)
+    // Keep: Chinese chars, letters, digits, spaces, and natural sentence punctuation
+    function cleanText(raw) {
+      return raw
+        // Replace runs of repeated symbols (===, ---, ~~~, ***  etc.) with a pause space
+        .replace(/([^\u4e00-\u9fa5a-zA-Z0-9\s，。！？、；：""''（）【】\n])\1+/g, ' ')
+        // Remove any remaining non-speech symbols (everything except what we want)
+        .replace(/[^\u4e00-\u9fa5a-zA-Z0-9\s，。！？、；：""''（）【】«»\n]/g, ' ')
+        // Collapse multiple spaces/newlines into a single space
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{2,}/g, '\n')
+        .trim();
+    }
+
+    function startReading() {
+      const raw  = textEl.value.trim();
+      const text = cleanText(raw);
+      if (!text) { status.textContent = '请先输入文字！'; return; }
+
+      isStopped = false;
+      isPaused  = false;
+      synth.cancel();
+
+      chunks = splitChunks(text);
+      btnPlay.disabled  = true;
+      btnPause.disabled = false;
+      btnStop.disabled  = false;
+      btnPause.textContent = '⏸ 暂停';
+
+      // Small delay so cancel() flushes before new utterances are queued
+      setTimeout(() => speakChunk(0), 150);
+    }
+
+    function togglePause() {
+      if (isPaused) {
+        // Resume: restart from the chunk we paused on
+        isPaused = false;
+        btnPause.textContent = '⏸ 暂停';
+        speakChunk(chunkIndex);
+      } else {
+        // Pause: stop playback, remember current chunk index
+        isPaused = true;
+        synth.cancel(); // onerror 'interrupted' will be ignored; onend won't advance (isPaused=true)
+        btnPause.textContent = '▶ 继续';
+        status.textContent   = `已暂停（第 ${chunkIndex + 1} / ${chunks.length} 段）`;
+      }
+    }
+
+    function stopReading() {
+      isStopped = true;
+      synth.cancel();
+      status.textContent = '已停止。';
+      resetButtons();
+    }
+
+    function resetButtons() {
+      btnPlay.disabled  = false;
+      btnPause.disabled = true;
+      btnStop.disabled  = true;
+      btnPause.textContent = '⏸ 暂停';
+    }
+
+    // Allow Ctrl+Enter to start reading
+    textEl.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'Enter') startReading();
+    });
+  </script>
+</body>
+</html>
